@@ -67,19 +67,34 @@ const RUCHES = [
   {
     id:  '7B464',
     nom: 'Château Massilan',
-    csvUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B464/importcsv.php'
+    csvUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B464/importcsv.php',
+    indexUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B464/index.php'
   },
   {
     id:  '7B462',
     nom: 'Lac Li Piboulos',
-    csvUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B462/importcsv.php'
+    csvUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B462/importcsv.php',
+    indexUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B462/index.php'
   },
   {
     id:  '7B45C',
     nom: 'La Comtesse',
-    csvUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B45C/importcsv.php'
+    csvUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B45C/importcsv.php',
+    indexUrl: 'https://beezbee.ddns.net/beezbee-curve/beezbee-disp-7B45C/index.php'
   }
 ];
+
+// Récupérer la batterie depuis la page index BeeZbee
+async function getBatterie(indexUrl) {
+  try {
+    const html = await (await fetch(indexUrl, { timeout: 10000 })).text();
+    // La page contient "Batterie XX   + XX %"
+    const match = html.match(/Batterie\s+(\d+)/i);
+    return match ? parseFloat(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
 
 // ─── NOTIFICATIONS PUSH (VAPID) ───────────────────────────────────────────────
 webpush.setVapidDetails(
@@ -138,6 +153,9 @@ async function collecterToutesLesRuches() {
       const releves = parseCsv(texte);
       if (releves.length === 0) continue;
 
+      // Récupérer la batterie depuis la page index
+      const batterie = await getBatterie(ruche.indexUrl);
+
       // Dernier relevé connu en base
       const { rows: derniers } = await pool.query(
         `SELECT poids, date_mesure FROM releves
@@ -158,7 +176,7 @@ async function collecterToutesLesRuches() {
           await pool.query(
             `INSERT INTO releves(ruche_id, ruche_nom, date_mesure, poids, temperature, hygrometrie, batterie)
              VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
-            [ruche.id, ruche.nom, r.date, r.poids, r.temperature, r.hygrometrie, r.batterie]
+            [ruche.id, ruche.nom, r.date, r.poids, r.temperature, r.hygrometrie, r.batterie ?? batterie]
           );
           nbInseres++;
         }
@@ -275,6 +293,27 @@ app.post('/api/config/seuil', async (req, res) => {
 app.post('/api/collecter-maintenant', async (req, res) => {
   collecterToutesLesRuches();
   res.json({ ok: true, message: 'Collecte lancée en arrière-plan' });
+});
+
+// Batterie en temps réel pour toutes les ruches
+app.get('/api/batteries', async (req, res) => {
+  try {
+    const results = await Promise.all(RUCHES.map(async ruche => {
+      const batt = await getBatterie(ruche.indexUrl);
+      // Mettre à jour la dernière ligne en base si on a la valeur
+      if (batt !== null) {
+        await pool.query(
+          `UPDATE releves SET batterie = $1
+           WHERE id = (SELECT id FROM releves WHERE ruche_id = $2 ORDER BY date_mesure DESC LIMIT 1)`,
+          [batt, ruche.id]
+        );
+      }
+      return { ruche_id: ruche.id, ruche_nom: ruche.nom, batterie: batt };
+    }));
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ erreur: err.message });
+  }
 });
 
 // Health check
