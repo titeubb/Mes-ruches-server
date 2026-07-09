@@ -273,12 +273,78 @@ app.post('/api/config/seuil', async (req, res) => {
 
 // Forcer une collecte immédiate (pour tests)
 app.post('/api/collecter-maintenant', async (req, res) => {
-  collecterToutesLesRuches(); // pas d'await pour répondre immédiatement
+  collecterToutesLesRuches();
   res.json({ ok: true, message: 'Collecte lancée en arrière-plan' });
 });
 
-// Health check (pour cron-job.org qui garde le serveur éveillé)
+// Health check
 app.get('/health', (req, res) => res.json({ ok: true, ts: new Date().toISOString() }));
+
+// ─── PROXY IA (Claude API) ────────────────────────────────────────────────────
+// La PWA ne peut pas appeler directement l'API Anthropic (CORS).
+// Le serveur fait le relais de façon sécurisée.
+
+async function appelClaude(prompt, imageData = null) {
+  const content = imageData
+    ? [
+        { type: 'image', source: { type: 'base64', media_type: imageData.type, data: imageData.data } },
+        { type: 'text', text: prompt }
+      ]
+    : prompt;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content }]
+    })
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.content?.[0]?.text || '';
+}
+
+// Analyse courbe de poids
+app.post('/api/ia/analyser-poids', async (req, res) => {
+  try {
+    const { rucheNom, donnees, alertes } = req.body;
+    const prompt = `Tu es un expert apiculteur français. Analyse la courbe de poids de la ruche "${rucheNom}" sur les 30 derniers jours.\n\nDonnées (date, poids, température intérieure):\n${donnees}\n\nAlertes détectées: ${alertes || 'aucune'}\n\nDonne une analyse structurée avec:\n1. État général de la colonie\n2. Points remarquables (pics, baisses, tendances)\n3. Interprétation apicole\n4. Recommandations concrètes\n\nSois précis et pratique. Réponds en français.`;
+    const result = await appelClaude(prompt);
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Analyse photo de cadre
+app.post('/api/ia/analyser-photo', async (req, res) => {
+  try {
+    const { imageData, imageType } = req.body;
+    const prompt = `Tu es un expert apiculteur. Analyse ce cadre de ruche en détail:\n1. État général du cadre\n2. Couvain (présence, qualité, operculation)\n3. Reine visible ou indices de présence\n4. Réserves (miel, pollen)\n5. Signes de maladies ou problèmes (loque, varroa, nosema…)\n6. Recommandations immédiates\n\nSois précis et pratique. Réponds en français.`;
+    const result = await appelClaude(prompt, { type: imageType, data: imageData });
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Prévision des récoltes
+app.post('/api/ia/prevision-recoltes', async (req, res) => {
+  try {
+    const { donnees, totalRecolte, dateActuelle } = req.body;
+    const prompt = `Tu es un expert apiculteur. Base-toi sur ces données de ruches pour faire une prévision de récolte:\n\n${donnees}\n\nTotal déjà récolté cette année: ${totalRecolte} kg\nDate actuelle: ${dateActuelle}\n\nDonne:\n1. Estimation de récolte par ruche pour les 2-3 prochains mois\n2. Total estimé\n3. Conditions à surveiller\n4. Moment optimal pour la récolte\n\nSois précis et pratique. Réponds en français.`;
+    const result = await appelClaude(prompt);
+    res.json({ ok: true, result });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 10000;
