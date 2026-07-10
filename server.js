@@ -88,9 +88,13 @@ const RUCHES = [
 async function getBatterie(indexUrl) {
   try {
     const html = await (await fetch(indexUrl, { timeout: 10000 })).text();
-    // La page contient "Batterie XX   + XX %"
-    const match = html.match(/Batterie\s+(\d+)/i);
-    return match ? parseFloat(match[1]) : null;
+    // BeeZbee affiche : "Batterie XX   + XX % Depuis"
+    // On cherche le nombre qui suit "Batterie" dans le body
+    const match = html.match(/Batterie\D{0,10}?(\d+)\s/i);
+    if (match) return parseFloat(match[1]);
+    // Fallback : chercher dans les valeurs numériques après "atterie"
+    const match2 = html.match(/atterie[^0-9]*(\d+)/i);
+    return match2 ? parseFloat(match2[1]) : null;
   } catch {
     return null;
   }
